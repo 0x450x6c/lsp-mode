@@ -897,6 +897,13 @@ directory")
                                            (lsp--registered-capability-options)))))
                           (and (hash-table-p table)
                                (gethash "prepareProvider" table))))))
+    ("textDocument/rename"
+     :check-command
+     (lambda (workspace)
+       (with-lsp-workspace workspace
+         (or
+          (lsp--capability "renameProvider")
+          (lsp--registered-capability "textDocument/rename")))))
     ("textDocument/rangeFormatting" :capability "documentRangeFormattingProvider")
     ("textDocument/references" :capability "referencesProvider")
     ("textDocument/selectionRange" :capability "selectionRangeProvider")
@@ -4917,18 +4924,18 @@ Others: TRIGGER-CHARS"
                     (list locations)))
 
   (cl-labels ((get-xrefs-in-file
-               (file-locs location-link)
+               (file-locs)
                (-let [(filename . matches) file-locs]
                  (condition-case err
                      (let ((visiting (lsp--buffer-for-file filename))
                            (fn (lambda (loc)
                                  (lsp-with-filename filename
                                    (lsp--xref-make-item filename
-                                                        (if location-link
-                                                            (or
-                                                             (gethash "targetSelectionRange" loc)
-                                                             (gethash "targetRange" loc))
-                                                          (gethash "range" loc)))))))
+                                                        (or
+                                                         (gethash "targetSelectionRange" loc)
+                                                         (gethash "targetRange" loc)
+                                                         (gethash "range" loc))
+                                                        )))))
                        (if visiting
                            (with-current-buffer visiting
                              (seq-map fn matches))
@@ -4940,16 +4947,16 @@ Others: TRIGGER-CHARS"
                                     filename (error-message-string err)))
                    (file-error (lsp-warn "Failed to process xref entry, file-error, '%s': %s"
                                          filename (error-message-string err)))))))
-    (apply #'append
-           (if (-some->> locations (cl-first) (gethash "uri"))
-               (->> locations
-                    (seq-group-by (-compose #'lsp--uri-to-path
-                                            (-partial #'gethash "uri")))
-                    (seq-map (-rpartial #'get-xrefs-in-file nil)))
-             (->> locations
-                  (seq-group-by (-compose #'lsp--uri-to-path
-                                          (-partial #'gethash "targetUri")))
-                  (seq-map (-rpartial #'get-xrefs-in-file t)))))))
+    (-distinct (apply #'append
+                      (->> locations
+                           (seq-group-by
+                            (-compose #'lsp--uri-to-path
+                                      (lambda (location)
+                                        (or
+                                         (gethash "uri" location)
+                                         (gethash "targetUri" location)))))
+                           (seq-map (-rpartial #'get-xrefs-in-file)))
+                      ))))
 
 (defun lsp--make-reference-params (&optional td-position include-declaration)
   "Make a ReferenceParam object.
@@ -5312,10 +5319,15 @@ RENDER-ALL - nil if only the signature should be rendered."
     (lv-delete-window)))
 
 (defun lsp--handle-signature-update (signature)
-  (let ((message (lsp--signature->message signature)))
-    (if (s-present? message)
-        (funcall lsp-signature-function message)
-      (lsp-signature-stop))))
+    (if (string= 'cons (type-of signature))
+      (mapcar
+        (lambda (signature)
+          (lsp--handle-signature-update signature))
+        signature)
+      (let ((message (lsp--signature->message signature)))
+        (if (s-present? message)
+          (funcall lsp-signature-function message)
+          (lsp-signature-stop)))))
 
 (defun lsp--signature-maybe-stop ()
   (when (and lsp--signature-last-buffer
